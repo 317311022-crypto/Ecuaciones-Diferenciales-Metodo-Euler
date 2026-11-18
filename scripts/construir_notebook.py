@@ -616,7 +616,7 @@ python euler_app.py          # la ecuación, los parámetros y la CALIDAD se esc
 python -m edo.app "y(1 - y/10)" --y0 1 --h 0.5 --hasta 10 --metodo rk4 --calidad alta
 ```
 
-**Calidad visual** (`CALIDAD` en `euler_app.py`): `"media"` (predeterminada, pensada para laptops: fondo fijo sin parallax, mitad de capas de brillo, 25 cuadros por segundo), `"alta"` (todos los efectos, con parallax; para computadoras de escritorio) y `"baja"` (equipos lentos). La ventana además se ajusta sola al tamaño de la pantalla, incluida la escala de Windows (125 %, 150 %...).
+**Calidad visual** (`CALIDAD` en `euler_app.py`): `"media"` (predeterminada, pensada para laptops: mitad de capas de brillo, 25 cuadros por segundo), `"alta"` (todas las capas de brillo, 30 cuadros por segundo; para computadoras de escritorio) y `"baja"` (equipos lentos). La ventana además se ajusta sola al tamaño de la pantalla, incluida la escala de Windows (125 %, 150 %...).
 
 - **Arriba**: la ecuación $y' = f(x, y)$, la condición inicial, $h$, el intervalo, la solución exacta (opcional) y el método. `Enter` o **▶ Resolver** recalculan.
 - **Izquierda, registro**: cada paso con sus evaluaciones de $f$ ($k_1, k_2, \dots$ en el mismo color que en la gráfica), la fórmula con los números sustituidos y el error contra la referencia. Avisos (⚠) y errores (✖) aparecen en el mismo registro.
@@ -640,7 +640,6 @@ def captura(config, nombre, revelados, seleccion=None, progreso=1.0, seguir=Fals
         app.alternar_seguir()
         for _ in range(80):
             app._mover_camara(0.05)
-        app.raton[:] = (0.35, 0.25); app.raton_suave[:] = app.raton
         app._fijar_vista(app.grafica.ax.get_xlim(), app.grafica.ax.get_ylim())
         app._redibujar()
     ruta = app.guardar(f"img/{nombre}.png", dpi=80)
@@ -651,7 +650,7 @@ captura(Configuracion("x + y", 0, 1, 0.1, 2, "euler", "2*exp(x) - x - 1"), "app_
 """)
 
 md(r"""
-Con RK4 el registro muestra las cuatro evaluaciones de cada paso y la gráfica marca dónde se hizo cada una (puntos $k_1 \dots k_4$ con su pendiente). Esta captura usa la calidad **alta** con la cámara en modo **seguir**: el fondo se desplaza con parallax (las capas lejanas se mueven menos que los datos). La franja de error de abajo no sigue el zoom: siempre muestra el intervalo completo.
+Con RK4 el registro muestra las cuatro evaluaciones de cada paso y la gráfica marca dónde se hizo cada una (puntos $k_1 \dots k_4$ con su pendiente). Esta captura usa la calidad **alta** con la cámara en modo **seguir** (la vista acompaña al punto que avanza). La franja de error de abajo no sigue el zoom: siempre muestra el intervalo completo.
 """)
 
 code(r"""
@@ -682,7 +681,7 @@ edo/
 └── app/              la interfaz (solo dibuja; no sabe nada de Euler)
     ├── tema.py       colores y fuentes
     ├── calidad.py    perfiles alta / media / baja (cuántos efectos dibujar)
-    ├── efectos.py    luminiscencia y fondo con parallax
+    ├── efectos.py    luminiscencia y fondo estelar
     ├── consola.py    registro con resaltado de sintaxis (rasterizado propio)
     ├── grafica.py    campo de pendientes, poligonal, tangente, etapas, error
     └── ventana.py    une todo, eventos y animación
@@ -692,7 +691,7 @@ La separación importa: **la app no tiene ningún `if metodo == "euler"`**. Toma
 
 **Luminiscencia.** Matplotlib no tiene "brillo": cada trazo importante se dibuja varias veces debajo de sí mismo, cada copia más ancha y más transparente, con un núcleo casi blanco encima (como un tubo de neón).
 
-**Parallax** (calidad alta). El fondo son capas (estrellas, orbes desenfocados, una retícula de puntos) en unos ejes detrás de los ejes de datos. Cada capa tiene una profundidad $p \in (0, 1)$: cuando la vista de datos se desplaza $\Delta$, la capa se desplaza $p\,\Delta$; con el ratón la vista "orbita" alrededor del plano de los datos y lo más lejano se mueve más. Las capas se repiten periódicamente para que nunca se vea un borde. En calidad media y baja el fondo es fijo: se dibuja una sola vez.
+**Fondo.** Detrás de los ejes de datos (transparentes) hay una imagen con degradado, nebulosa y viñeta, más polvo de estrellas, orbes desenfocados y una retícula de puntos. Es fijo: se dibuja una sola vez por tamaño de ventana.
 
 **Rendimiento.** Matplotlib dibuja con el **CPU** (biblioteca Agg), no con la tarjeta de video: lo que decide la fluidez es cuánto se dibuja por cuadro y cuántos píxeles tiene la ventana. Por eso la ventana se compone de capas que se guardan ya dibujadas y solo se repintan cuando cambia lo que muestran:
 

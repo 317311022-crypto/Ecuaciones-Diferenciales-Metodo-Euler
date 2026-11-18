@@ -201,7 +201,7 @@ def test_perfiles_de_calidad():
     from edo.app.calidad import CALIDADES, obtener_calidad
 
     assert obtener_calidad("MEDIA") is CALIDADES["media"]
-    assert not CALIDADES["media"].parallax and CALIDADES["alta"].parallax
+    assert CALIDADES["media"].brillo < CALIDADES["alta"].brillo and not CALIDADES["baja"].decoracion
     for q in CALIDADES.values():
         n, a = q.halo(9, 0.045)
         assert 1 <= n <= 9 and n * a == pytest.approx(9 * 0.045)       # el brillo total se conserva

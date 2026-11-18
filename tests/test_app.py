@@ -96,7 +96,7 @@ def test_clic_en_registro_selecciona_paso(app):
     assert app.seleccion == 0
 
 
-def test_zoom_arrastre_y_parallax(app):
+def test_zoom_y_arrastre(app):
     ax = app.grafica.ax
     antes = ax.get_xlim()
     x, y = ax.transAxes.transform((0.5, 0.5))
@@ -105,7 +105,7 @@ def test_zoom_arrastre_y_parallax(app):
     MouseEvent("button_press_event", app.fig.canvas, x, y, 1)._process()
     MouseEvent("motion_notify_event", app.fig.canvas, x + 80, y + 30)._process()
     MouseEvent("button_release_event", app.fig.canvas, x + 80, y + 30, 1)._process()
-    assert app.camara[0] != 0
+    assert ax.get_xlim()[0] != pytest.approx(antes[0]) and ax.get_ylim() != pytest.approx(app.grafica.vista_inicial[1])
     for _ in range(80):
         app._t_prev -= 0.05
         app._tick()

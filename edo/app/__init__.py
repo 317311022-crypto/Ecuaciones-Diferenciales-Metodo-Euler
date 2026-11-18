@@ -4,7 +4,7 @@ Uso::
 
     python -m edo.app                       # valores por defecto
     python euler_app.py                     # con la configuración escrita al inicio del archivo
-    python -m edo.app --calidad alta        # todos los efectos (parallax); "media" para laptops
+    python -m edo.app --calidad alta        # todas las capas de brillo; "media" para laptops
 
     from edo.app import EulerLab
     from edo import Configuracion
@@ -14,7 +14,7 @@ Módulos:
 
 * ``tema``     colores y fuentes (cámbialos aquí).
 * ``calidad``  perfiles alta / media / baja (cuántos efectos dibujar).
-* ``efectos``  luminiscencia y fondo con parallax.
+* ``efectos``  luminiscencia y fondo estelar.
 * ``consola``  el registro paso a paso con resaltado de sintaxis.
 * ``grafica``  la gráfica: campo de pendientes, poligonal, tangente, etapas, error.
 * ``ventana``  arma todo y maneja eventos y animación.

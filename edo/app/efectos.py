@@ -1,23 +1,15 @@
-"""Efectos visuales: luminiscencia (glow) y fondo con parallax.
+"""Efectos visuales: luminiscencia (glow) y fondo estelar fijo.
 
 Luminiscencia
     Matplotlib no tiene "brillo", pero se imita bien apilando copias del mismo
     trazo, cada vez más anchas y más transparentes, debajo del trazo principal
     (y un núcleo casi blanco encima, como un tubo de neón).
 
-Parallax
-    El fondo de la gráfica son varias capas (polvo de estrellas, orbes
-    desenfocados, una retícula de puntos) dibujadas en unos ejes propios, detrás
-    de los ejes de datos que son transparentes. Cada capa tiene una
-    *profundidad* entre 0 (infinitamente lejos) y 1 (el plano de los datos):
-
-    * al mover la cámara (zoom, arrastrar, modo "seguir") una capa se desplaza
-      ``profundidad`` veces lo que se desplazan los datos: las lejanas casi no se
-      mueven y las cercanas casi acompañan a los datos;
-    * al mover el ratón la vista "orbita" alrededor del plano de los datos: lo que
-      está más al fondo se desplaza más.
-
-    Las capas se repiten de forma periódica, así que nunca se ve un borde.
+Fondo
+    Detrás de los ejes de datos (que son transparentes) hay una imagen con un
+    degradado, manchas de nebulosa y viñeta, y encima polvo de estrellas, orbes
+    desenfocados y una retícula de puntos. Todo es fijo: se dibuja una sola vez
+    por tamaño de ventana y después solo se copia.
 """
 
 from __future__ import annotations
@@ -170,99 +162,19 @@ def resplandor(ax, capas: int = 6, alcance: float = 8.0, intensidad: float = 0.0
                     zorder=linea.get_zorder() - 0.1, solid_capstyle="round", label="_halo")
 
 
-# --------------------------------------------------------------------------- parallax
-class _Capa:
-    """Capa de puntos repetida periódicamente. ``base`` vive en [0, W)²."""
+# --------------------------------------------------------------------------- fondo
+class FondoEstelar:
+    """Fondo fijo de la gráfica.
 
-    margen = 0.12
-
-    def __init__(self, profundidad: float):
-        self.profundidad = profundidad
-
-    def _envolver(self, base, dx, dy):
-        w = 1 + 2 * self.margen
-        x = np.mod(base[:, 0] + dx, w) - self.margen
-        y = np.mod(base[:, 1] + dy, w) - self.margen
-        return np.column_stack([x, y])
-
-
-class CapaEstrellas(_Capa):
-    def __init__(self, ax, rng, n, profundidad, tam, alpha, colores, zorder):
-        super().__init__(profundidad)
-        w = 1 + 2 * self.margen
-        self.base = rng.uniform(0, w, size=(n, 2))
-        self.alpha_base = rng.uniform(*alpha, size=n)
-        self.fase = rng.uniform(0, 2 * np.pi, size=n)
-        self.vel = rng.uniform(0.6, 2.2, size=n)
-        self.rgba = np.array([to_rgba(colores[i % len(colores)]) for i in rng.integers(0, len(colores), n)])
-        tamanos = rng.uniform(*tam, size=n) ** 2
-        self.puntos = ax.scatter(*self.base.T, s=tamanos, c=self.rgba, linewidths=0, zorder=zorder)
-        self._colores(0.0)
-
-    def _colores(self, t):
-        rgba = self.rgba.copy()
-        rgba[:, 3] = self.alpha_base * (0.7 + 0.3 * np.sin(self.vel * t + self.fase))
-        self.puntos.set_facecolors(rgba)
-
-    def desplazar(self, dx, dy, t=None):
-        self.puntos.set_offsets(self._envolver(self.base, dx, dy))
-        if t is not None:
-            self._colores(t)
-
-
-class CapaOrbes(_Capa):
-    """Círculos grandes y muy transparentes: el 'bokeh' de una cámara desenfocada."""
-
-    margen = 0.3
-
-    def __init__(self, ax, rng, n, profundidad, colores, zorder):
-        super().__init__(profundidad)
-        w = 1 + 2 * self.margen
-        self.base = rng.uniform(0, w, size=(n, 2))
-        radios = rng.uniform(18, 70, size=n)
-        cols = [colores[i % len(colores)] for i in range(n)]
-        self.aros = []
-        for factor, alpha in ((1.0, 0.035), (0.72, 0.035), (0.45, 0.04)):
-            self.aros.append(ax.scatter(*self.base.T, s=(radios * factor) ** 2, c=cols, alpha=alpha,
-                                        linewidths=0, zorder=zorder))
-
-    def desplazar(self, dx, dy, t=None):
-        xy = self._envolver(self.base, dx, dy)
-        for a in self.aros:
-            a.set_offsets(xy)
-
-
-class CapaReticula(_Capa):
-    """Retícula de puntos (como en un editor de diseño), alineada a una malla regular."""
-
-    def __init__(self, ax, profundidad, paso, color, zorder):
-        super().__init__(profundidad)
-        self.paso = paso
-        g = np.arange(-paso, 1 + 2 * paso, paso)
-        X, Y = np.meshgrid(g, g)
-        self.base = np.column_stack([X.ravel(), Y.ravel()])
-        self.puntos = ax.scatter(*self.base.T, s=1.6, color=color, linewidths=0, zorder=zorder)
-
-    def desplazar(self, dx, dy, t=None):
-        self.puntos.set_offsets(self.base + [np.mod(dx, self.paso), np.mod(dy, self.paso)])
-
-
-class FondoParallax:
-    """Fondo de la gráfica.
-
-    ``ax_fijo`` guarda una sola imagen (degradado, nebulosa y viñeta) y ``ax``
-    las capas decorativas (estrellas, orbes, retícula). Con ``parallax=True``
-    las capas se desplazan con la cámara y el ratón, lo que obliga a
-    redibujarlas en cada movimiento; con ``parallax=False`` quedan fijas y se
-    dibujan una sola vez junto con el resto de la parte estática de la ventana.
+    ``ax_fijo`` guarda una sola imagen (degradado, nebulosa y viñeta) y ``ax`` la
+    decoración (estrellas, orbes, retícula de puntos). Nada se mueve, así que la
+    ventana los dibuja una vez y después reutiliza el resultado.
     """
 
-    SENSIBILIDAD_RATON = 0.07
+    ESTRELLAS = ("#ffffff", "#9fdcff", "#d9c2ff", "#ffd6f5")
+    ORBES = ("#ff2bd6", "#00e5ff", "#8a5cff", "#00ffc8", "#3d7bff")
 
-    def __init__(self, fig, rect, parallax: bool = True, decoracion: bool = True, centelleo: bool = True,
-                 semilla: int = 7, zorder: float = -5):
-        self.parallax = parallax and decoracion
-        self.centelleo = centelleo and self.parallax
+    def __init__(self, fig, rect, decoracion: bool = True, semilla: int = 7, zorder: float = -5):
         self.ax_fijo = fig.add_axes(rect, zorder=zorder - 0.5)
         self.ax = fig.add_axes(rect, zorder=zorder)
         for ax in (self.ax_fijo, self.ax):
@@ -271,24 +183,31 @@ class FondoParallax:
             ax.set_ylim(0, 1)
             ax.set_navigate(False)
         self.ax.patch.set_visible(False)
-        rng = np.random.default_rng(semilla)
 
         # uint8 a baja resolución + bilineal: unas 3-4 veces más rápido de dibujar que flotantes.
         self.ax_fijo.imshow((self._imagen_fija() * 255).astype(np.uint8), extent=(0, 1, 0, 1), origin="lower",
                             aspect="auto", interpolation="bilinear", zorder=0)
-
-        estrellas = ["#ffffff", "#9fdcff", "#d9c2ff", "#ffd6f5"]
-        self.capas = []
         if decoracion:
-            self.capas = [
-                CapaEstrellas(self.ax, rng, 260, 0.10, (0.4, 1.6), (0.15, 0.55), estrellas, zorder=2),
-                CapaOrbes(self.ax, rng, 11, 0.25, ["#ff2bd6", "#00e5ff", "#8a5cff", "#00ffc8", "#3d7bff"], zorder=3),
-                CapaEstrellas(self.ax, rng, 60, 0.42, (1.2, 2.8), (0.35, 0.9), estrellas, zorder=4),
-                CapaReticula(self.ax, 0.7, 0.045, "#1d2a52", zorder=5),
-            ]
-        self.firma: tuple = ()
-        for capa in self.capas:
-            capa.desplazar(0.0, 0.0)
+            self._decorar(np.random.default_rng(semilla))
+
+    def _decorar(self, rng) -> None:
+        ax = self.ax
+        # Dos capas de polvo de estrellas: muchas pequeñas y tenues, pocas más grandes.
+        for n, tam, alpha, z in ((260, (0.4, 1.6), (0.15, 0.55), 2), (60, (1.2, 2.8), (0.35, 0.9), 4)):
+            xy = rng.uniform(-0.12, 1.12, size=(n, 2))
+            rgba = np.array([to_rgba(c) for c in rng.choice(self.ESTRELLAS, n)])
+            rgba[:, 3] = rng.uniform(*alpha, size=n) * (0.7 + 0.3 * np.sin(rng.uniform(0, 2 * np.pi, size=n)))
+            ax.scatter(*xy.T, s=rng.uniform(*tam, size=n) ** 2, c=rgba, linewidths=0, zorder=z)
+        # Orbes: círculos grandes y muy transparentes, como el "bokeh" de una cámara desenfocada.
+        xy = rng.uniform(-0.3, 1.3, size=(11, 2))
+        radios = rng.uniform(18, 70, size=11)
+        colores = [self.ORBES[i % len(self.ORBES)] for i in range(11)]
+        for factor, alpha in ((1.0, 0.035), (0.72, 0.035), (0.45, 0.04)):
+            ax.scatter(*xy.T, s=(radios * factor) ** 2, c=colores, alpha=alpha, linewidths=0, zorder=3)
+        # Retícula de puntos (como en un editor de diseño).
+        g = np.arange(0, 1 + 1e-9, 0.045)
+        X, Y = np.meshgrid(g, g)
+        ax.scatter(X.ravel(), Y.ravel(), s=1.6, color="#1d2a52", linewidths=0, zorder=5)
 
     @staticmethod
     def _imagen_fija(n: int = 180) -> np.ndarray:
@@ -306,26 +225,3 @@ class FondoParallax:
         v = (np.clip((r - 0.32) / 0.42, 0, 1) ** 1.7 * 0.8)[..., None]
         img = img * (1 - v) + orilla * v
         return np.clip(img, 0, 1)
-
-    @property
-    def ejes_moviles(self) -> list:
-        """Ejes que hay que redibujar cuando la cámara o el ratón se mueven."""
-        return [self.ax] if self.parallax else []
-
-    def actualizar(self, camara, raton, t: float | None = None) -> None:
-        """``camara``: desplazamiento de la vista de datos (en anchos de la vista
-        inicial). ``raton``: posición del ratón respecto al centro, en [-0.5, 0.5].
-        Sin parallax no hace nada."""
-        if not self.parallax:
-            return
-        cx, cy = camara
-        rx, ry = raton
-        if not self.centelleo:
-            t = None
-        k = self.SENSIBILIDAD_RATON
-        for capa in self.capas:
-            p = capa.profundidad
-            capa.desplazar(-p * cx + (1 - p) * k * rx, -p * cy + (1 - p) * k * ry, t)
-        # Lo que hay que comparar para saber si el fondo cambió desde el último dibujo.
-        self.firma = (round(float(cx), 5), round(float(cy), 5), round(float(rx), 4), round(float(ry), 4),
-                      None if t is None else round(t, 2))

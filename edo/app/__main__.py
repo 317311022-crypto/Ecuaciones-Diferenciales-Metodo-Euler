@@ -18,7 +18,7 @@ def main(argv=None) -> None:
     p.add_argument("--metodo", default="euler")
     p.add_argument("--exacta", default="", help="solución exacta y(x), opcional")
     p.add_argument("--calidad", default="media", choices=["alta", "media", "baja"],
-                   help="alta: con parallax · media: laptops (predeterminada) · baja: equipos lentos")
+                   help="alta: escritorio · media: laptops (predeterminada) · baja: equipos lentos")
     a = p.parse_args(argv)
     abrir(Configuracion(a.ecuacion, a.x0, a.y0, a.h, a.hasta, a.metodo, a.exacta), calidad=a.calidad)
 

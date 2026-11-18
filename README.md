@@ -30,7 +30,7 @@ H = 0.1                         # tamaño de paso
 X_FINAL = 2                     # integrar hasta aquí
 METODO = "euler"                # "euler", "heun", "rk4" o cualquier método registrado
 EXACTA = "2*exp(x) - x - 1"     # opcional: solución exacta para medir el error
-CALIDAD = "media"               # "media" (laptops) · "alta" (con parallax) · "baja" (equipos lentos)
+CALIDAD = "media"               # "media" (laptops) · "alta" (escritorio) · "baja" (equipos lentos)
 ```
 
 …y también se pueden cambiar dentro de la ventana (barra superior, `Enter` o **▶ Resolver**).
@@ -46,8 +46,8 @@ importa es cuánto se dibuja en cada cuadro y cuántos píxeles tiene la ventana
 
 | `CALIDAD` | Para | Qué cambia |
 |---|---|---|
-| `"media"` (predeterminada) | laptops (p. ej. Ryzen 5/7 con gráficos integrados) | fondo fijo **sin parallax**, mitad de capas de brillo, 25 fps |
-| `"alta"` | computadoras de escritorio | todos los efectos, fondo con **parallax**, 30 fps |
+| `"media"` (predeterminada) | laptops (p. ej. Ryzen 5/7 con gráficos integrados) | mitad de capas de brillo, 25 fps |
+| `"alta"` | computadoras de escritorio | todas las capas de brillo, 30 fps |
 | `"baja"` | equipos lentos | fondo liso, brillo mínimo, 20 fps |
 
 Además:
@@ -72,7 +72,7 @@ Medido a la resolución de una pantalla 1920×1080 al 125 % (ms por actualizaci�
 |---|---|
 | **Arriba** | Ecuación `y' = f(x, y)`, condición inicial, `h`, intervalo, solución exacta (opcional), método. |
 | **Izquierda — registro** | Cada paso: el punto `(xₙ, yₙ)`, cada evaluación `k₁ = f(…)`, la fórmula con los números sustituidos (`y₁ = y₀ + h·k₁ = 1.0000 + 0.1000·1.0000 = 1.1000`) y el error. Avisos ⚠ y errores ✖ en el mismo registro. |
-| **Derecha — gráfica** | Campo de pendientes, solución de referencia, poligonal del método con luminiscencia, y del paso actual: recta tangente, triángulo `h` / `Δy`, etapas `k₁…k₄`, error. Abajo, el error global por nodo (vista general de todo el intervalo). Fondo estrellado; con `CALIDAD = "alta"`, con efecto **parallax**. |
+| **Derecha — gráfica** | Campo de pendientes, solución de referencia, poligonal del método con luminiscencia, y del paso actual: recta tangente, triángulo `h` / `Δy`, etapas `k₁…k₄`, error. Abajo, el error global por nodo (vista general de todo el intervalo). Fondo estrellado fijo. |
 | **Barra de estado** | Estado, método y orden, paso actual, error, evaluaciones de `f`, coordenadas del ratón. |
 
 Tema oscuro de alto contraste tipo entorno de desarrollo; los colores de `k₁, k₂…` son
@@ -100,7 +100,7 @@ explotan, asíntotas que el método cruza sin notarlo, `f` no definida y falta d
 2. **Explicación**: tres deducciones, geometría, ejemplo a mano, error y orden, estabilidad, aplicación (enfriamiento).
 3. **¿En qué ayuda que esté en Python?**: legibilidad, NumPy (miles de condiciones iniciales a la vez), comparación con SciPy, ecuaciones como texto seguro, ventajas y costos.
 4. **¿Qué puede fallar?**: paso grande, inestabilidad, explosión en tiempo finito, no unicidad, `f` no definida, energía, redondeo, errores típicos al programar.
-5. **La app** y cómo está construida (luminiscencia, parallax, dibujo por capas, perfiles de calidad).
+5. **La app** y cómo está construida (luminiscencia, dibujo por capas, perfiles de calidad).
 6. **Agregar otro método**: punto medio y Euler implícito.
 
 ```bash
@@ -185,7 +185,7 @@ python -m edo --problema burden --convergencia
 │   └── app/                 # Interfaz (solo dibuja)
 │       ├── tema.py          #   Colores y fuentes
 │       ├── calidad.py       #   Perfiles alta / media / baja
-│       ├── efectos.py       #   Luminiscencia y parallax
+│       ├── efectos.py       #   Luminiscencia y fondo estelar
 │       ├── consola.py       #   Registro con resaltado de sintaxis (atlas de caracteres)
 │       ├── grafica.py       #   Panel de la gráfica
 │       └── ventana.py       #   Ventana, eventos, animación y dibujo por capas

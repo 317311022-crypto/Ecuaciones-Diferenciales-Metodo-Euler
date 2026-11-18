@@ -54,7 +54,7 @@ from ..metodos import metodos_disponibles, obtener_metodo
 from ..simulacion import Configuracion, Simulacion
 from .calidad import Calidad, obtener_calidad
 from .consola import Consola, L, Linea, colorear
-from .efectos import FondoParallax
+from .efectos import FondoEstelar
 from .grafica import PanelGrafica
 from .tema import CONSOLA, ETAPAS, FUENTE_MONO, FUENTE_UI, GRAFICA, UI, aplicar_tema
 
@@ -178,7 +178,7 @@ def _orden_metodos() -> list[str]:
 class EulerLab:
     """La aplicación. ``EulerLab(Configuracion(...), calidad="media").mostrar()``.
 
-    ``calidad``: ``"alta"`` (con parallax), ``"media"`` (laptops) o ``"baja"``;
+    ``calidad``: ``"alta"`` (escritorio), ``"media"`` (laptops) o ``"baja"``;
     ver :mod:`edo.app.calidad`. ``figsize``/``dpi``: si se omiten, se calculan
     para que la ventana quepa en la pantalla (``ajustar_pantalla=True``).
     """
@@ -212,9 +212,6 @@ class EulerLab:
         self.seguir = False
         self.metodos = _orden_metodos()
         self.metodo = self.config.metodo if self.config.metodo in self.metodos else self.metodos[0]
-        self.raton = np.zeros(2)
-        self.raton_suave = np.zeros(2)
-        self.camara = np.zeros(2)
         self._objetivo_vista = None
         self._arrastre = None
         self._t0 = time.perf_counter()
@@ -233,8 +230,7 @@ class EulerLab:
 
         q = self.calidad
         self._cromo()
-        self.fondo = FondoParallax(self.fig, self._rect_grafica_panel(), parallax=q.parallax,
-                                   decoracion=q.decoracion, centelleo=q.centelleo, zorder=-5)
+        self.fondo = FondoEstelar(self.fig, self._rect_grafica_panel(), decoracion=q.decoracion, zorder=-5)
         x, w = DER
         self.grafica = PanelGrafica(self.fig, [x + 0.040, 0.318, w - 0.052, 0.500],
                                     [x + 0.040, 0.075, w - 0.052, 0.155], calidad=q)
@@ -251,18 +247,12 @@ class EulerLab:
                                            fontsize=self.consola.tam, va="baseline", visible=False, zorder=3)
         g = self.grafica
         self._capa_registro = [self.consola.ax, self.txt_cabecera_registro]
+        # Fondo fijo: imagen, decoración y leyenda se dibujan una vez por tamaño de ventana.
+        self._capa_fondo = [self.fondo.ax_fijo, self.fondo.ax, *self.leyenda]
         # Bases de la gráfica: nombre -> (zona, artistas, sub-zonas de las capas que van encima).
-        if self.fondo.parallax:
-            # El fondo se mueve: cada vez hay que redibujar todo el panel (y la leyenda encima).
-            self._capa_fondo = [self.fondo.ax_fijo]
-            self._bases = {"base": ("grafica", [self.fondo.ax, g.ax, g.ax_err, *self.leyenda],
-                                    ("principal", "franja"))}
-        else:
-            # Fondo fijo: imagen, decoración y leyenda se dibujan una vez por tamaño de ventana;
-            # los ejes de arriba (siguen la vista) y los de la franja (vista general) van aparte.
-            self._capa_fondo = [self.fondo.ax_fijo, self.fondo.ax, *self.leyenda]
-            self._bases = {"base": ("sup", [g.ax], ("principal",)),
-                           "base_err": ("inf", [g.ax_err], ("franja",))}
+        # Los ejes de arriba siguen la vista; los de la franja (vista general) van aparte.
+        self._bases = {"base": ("sup", [g.ax], ("principal",)),
+                       "base_err": ("inf", [g.ax_err], ("franja",))}
         self._capa_franja = [g.capa_err]
         self._capa_dinamica = [g.capa]
         self._capa_estado = [self.est_estado, self.est_metodo, self.est_param, self.est_error, self.est_coord]
@@ -483,7 +473,6 @@ class EulerLab:
         self._error_txt = None
         self._poner_formula()
         self.grafica.cargar(self.sim)
-        self.camara[:] = 0
         self._objetivo_vista = None
         self._preparar_registro()
         n = self.sim.n_pasos
@@ -726,7 +715,7 @@ class EulerLab:
         vista_err = (*g.ax_err.get_xlim(), *g.ax_err.get_ylim())
         return {
             "registro": (self._clave_lineas, c.inicio, c.seleccion, c.filas, self.txt_cabecera_registro.get_text()),
-            "base": (g.version, vista, self.fondo.firma) + ((vista_err,) if "base_err" not in self._bases else ()),
+            "base": (g.version, vista),
             "base_err": (g.version, vista_err),
             "franja": (g.version, g.firma_base, vista_err),
             "dinamica": (g.version, vista, self.revelados, self.seleccion, round(self.progreso, 6),
@@ -983,13 +972,6 @@ class EulerLab:
                     self._actualizar_boton_animar()
 
         activo |= self._mover_camara(dt)
-
-        if self.calidad.parallax:       # parallax del ratón, con suavizado
-            delta = self.raton - self.raton_suave
-            if np.abs(delta).max() > 1e-3:
-                self.raton_suave += delta * (1 - math.exp(-dt * 7))
-                activo = True
-            self.fondo.actualizar(self.camara, self.raton_suave, t=ahora - self._t0 if self.animando else None)
         self._redibujar()
         if not activo and not self._sucio:
             self._dormir()
@@ -1022,10 +1004,6 @@ class EulerLab:
 
     def _fijar_vista(self, xlim, ylim) -> None:
         self.grafica.aplicar_vista(tuple(xlim), tuple(ylim))
-        (hx0, hx1), (hy0, hy1) = self.grafica.vista_inicial
-        cx, cy = (xlim[0] + xlim[1]) / 2, (ylim[0] + ylim[1]) / 2
-        self.camara[:] = ((cx - (hx0 + hx1) / 2) / (hx1 - hx0), (cy - (hy0 + hy1) / 2) / (hy1 - hy0))
-        self.fondo.actualizar(self.camara, self.raton_suave)
 
     # =================================================================== acciones (botones y teclas)
     def _actualizar_boton_animar(self) -> None:
@@ -1223,17 +1201,6 @@ class EulerLab:
         self._arrastre = None
 
     def _al_mover(self, evento) -> None:
-        if self.calidad.parallax:
-            # Parallax: posición del ratón respecto al centro del panel de la gráfica.
-            x, w = DER
-            y0 = ESTADO_ALTO
-            fx = evento.x / self.fig.bbox.width
-            fy = evento.y / self.fig.bbox.height
-            if x <= fx <= x + w and y0 <= fy <= CUERPO_ARRIBA:
-                self.raton[:] = (np.clip((fx - x) / w - 0.5, -0.5, 0.5),
-                                 np.clip((fy - y0) / (CUERPO_ARRIBA - y0) - 0.5, -0.5, 0.5))
-                self._despertar()
-
         if self._arrastre is not None and self.sim is not None:
             px, py, (x0, x1), (y0_, y1_) = self._arrastre
             caja = self.grafica.ax.get_window_extent()
@@ -1255,9 +1222,6 @@ class EulerLab:
         if self.est_coord.get_text():
             self.est_coord.set_text("")
             self._refrescar_estado()
-        if self.calidad.parallax:
-            self.raton[:] = 0
-            self._despertar()
 
     def _al_redimensionar(self, _evento) -> None:
         self._invalidar()
