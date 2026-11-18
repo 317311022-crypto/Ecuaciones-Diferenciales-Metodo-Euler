@@ -56,3 +56,16 @@ def test_funcion_exacta_y_parametros():
     assert evaluar_numero(0.1) == 0.1
     with pytest.raises(ErrorExpresion):
         evaluar_numero("x + 1")
+
+
+def test_escalar_igual_que_llamada_normal():
+    """La vía rápida (curva de referencia) da lo mismo que ``expr(x, y)``, con la misma semántica."""
+    from edo.expresion import compilar_edo
+
+    for texto in ("y*(1 - y/10)", "sin(t)*y", "1/(x - 1)", "sqrt(y)", "2"):
+        e = compilar_edo(texto)
+        f = e.escalar()
+        with np.errstate(all="ignore"):
+            for x, y in ((0.0, 1.0), (1.0, -4.0), (2.5, 3.0)):
+                a, b = e(x, y), f(x, y)
+                assert (np.isnan(a) and np.isnan(b)) or a == b, (texto, x, y)

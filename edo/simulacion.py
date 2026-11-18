@@ -45,6 +45,9 @@ class Aviso:
     paso: Optional[int] = None
 
 
+_Z_LIMITE: dict = {}    # método -> z límite de su región de estabilidad (eje real negativo)
+
+
 class _Contador:
     """Envuelve f para contar cuántas veces se evalúa."""
 
@@ -180,12 +183,15 @@ class Simulacion:
         """Mayor h con |R(hλ)| ≤ 1 (búsqueda simple sobre el eje real negativo)."""
         if lam >= 0:
             return math.inf
-        z_lim = 0.0
-        for z in np.linspace(0, -6, 6001)[1:]:
-            if abs(complex(self.metodo.funcion_estabilidad(z))) > 1 + 1e-12:
-                break
-            z_lim = z
-        return float(z_lim / lam)
+        clave = type(self.metodo)
+        if clave not in _Z_LIMITE:      # solo depende del método: se calcula una vez
+            z_lim = 0.0
+            for z in np.linspace(0, -6, 6001)[1:]:
+                if abs(complex(self.metodo.funcion_estabilidad(z))) > 1 + 1e-12:
+                    break
+                z_lim = z
+            _Z_LIMITE[clave] = float(z_lim)
+        return float(_Z_LIMITE[clave] / lam)
 
     # ------------------------------------------------------------------ referencia
     def _referencia(self) -> None:
@@ -197,7 +203,7 @@ class Simulacion:
             self.etiqueta_referencia = "solución exacta"
             return
 
-        rk4 = obtener_metodo("rk4")
+        f = self.ecuacion.escalar()
         n = max(len(self.pasos), 1)
         sub = max(8, math.ceil(800 / n))
         malla, _ = _construir_malla(self.x0, self.x_final, self.h, None)
@@ -208,8 +214,13 @@ class Simulacion:
                 a, b = float(malla[i]), float(malla[i + 1])
                 hh = (b - a) / sub
                 for j in range(sub):
-                    try:
-                        y = float(rk4.paso(self._f, a + j * hh, y, hh))
+                    t = a + j * hh
+                    try:        # RK4 escrito aquí mismo: ~3 veces más rápido que pasar por el método
+                        k1 = f(t, y)
+                        k2 = f(t + hh / 2, y + hh / 2 * k1)
+                        k3 = f(t + hh / 2, y + hh / 2 * k2)
+                        k4 = f(t + hh, y + hh * k3)
+                        y = float(y + (hh / 6) * (k1 + 2 * k2 + 2 * k3 + k4))
                     except (ArithmeticError, ValueError, TypeError):
                         y = math.nan
                     xs.append(a + (j + 1) * hh)

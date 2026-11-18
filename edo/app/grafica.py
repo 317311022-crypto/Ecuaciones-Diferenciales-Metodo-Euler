@@ -84,7 +84,9 @@ class PanelGrafica:
         self.ax_err = fig.add_axes(rect_error, zorder=2)
         _estilizar_ejes(self.ax)
         _estilizar_ejes(self.ax_err)
-        self.ax.yaxis.set_major_locator(MaxNLocator(7))
+        # Cada marca (raya + rejilla + etiqueta) cuesta ~0.8 ms al mover la vista: máximo 7.
+        for eje in (self.ax.xaxis, self.ax_err.xaxis, self.ax.yaxis):
+            eje.set_major_locator(MaxNLocator(7, steps=[1, 2, 2.5, 5, 10]))
         self.ax_err.yaxis.set_major_locator(MaxNLocator(3))
         self.ax_err.ticklabel_format(axis="y", style="sci", scilimits=(-2, 3))
         self.ax_err.yaxis.get_offset_text().set_color(GRAFICA["ticks"])

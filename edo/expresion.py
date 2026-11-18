@@ -121,6 +121,25 @@ class Expresion:
         with np.errstate(all="ignore"):
             return eval(self._codigo, self._globales, entorno)
 
+    def escalar(self):
+        """Versión rápida de ``__call__`` para miles de evaluaciones escalares seguidas
+        (p. ej. la curva de referencia): reutiliza el entorno y no valida nada.
+        Quien la use debe envolver el ciclo en ``np.errstate(all="ignore")``."""
+        codigo, globales, nombres = self._codigo, self._globales, self.variables
+        alias = {"x": "t", "t": "x"}
+        extra = tuple(alias[n] for n in nombres if n in alias and alias[n] not in nombres)
+        entorno: dict = {}
+        f64 = np.float64
+
+        def f(*valores):
+            for nombre, v in zip(nombres, valores):
+                entorno[nombre] = f64(v)
+            for nombre in extra:
+                entorno[nombre] = entorno[alias[nombre]]
+            return eval(codigo, globales, entorno)
+
+        return f
+
     def __str__(self) -> str:
         return self.original
 
