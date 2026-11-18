@@ -17,10 +17,12 @@ X_FINAL = 2                     # integrar hasta aquí
 METODO = "euler"                # "euler", "heun", "rk4" o cualquier método registrado
 EXACTA = "2*exp(x) - x - 1"     # solución exacta y(x) para medir el error ("" si no se conoce:
                                 # entonces se usa RK4 con un paso muy fino como referencia)
+CALIDAD = "media"               # "media": laptops (fondo fijo, sin parallax) · "alta": todos los
+                                # efectos con parallax (PC de escritorio) · "baja": equipos lentos
 # ╚═══════════════════════════════════════════════════════════════════════════╝
 
 from edo import Configuracion
 from edo.app import main
 
 if __name__ == "__main__":
-    main(Configuracion(ECUACION, X0, Y0, H, X_FINAL, METODO, EXACTA))
+    main(Configuracion(ECUACION, X0, Y0, H, X_FINAL, METODO, EXACTA), calidad=CALIDAD)

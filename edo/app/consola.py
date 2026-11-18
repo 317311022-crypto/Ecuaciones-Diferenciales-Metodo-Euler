@@ -1,31 +1,55 @@
 """Panel de registro con resaltado de sintaxis, al estilo de un editor de código.
 
-Cada renglón es una lista de *tokens* ``(texto, estilo)``. Para pintar un
-renglón de varios colores con matplotlib (que solo da un color por ``Text``)
-se usa un truco con la fuente monoespaciada: por cada estilo presente se
-dibuja el renglón completo en el que los caracteres de *otros* estilos se
-cambian por espacios. Todos los textos de un renglón comparten posición y
-línea base, así que los colores quedan perfectamente alineados.
+Cada renglón es una lista de *tokens* ``(texto, estilo)``.
+
+Rendimiento
+-----------
+Matplotlib solo da un color por ``Text``, así que un registro de colores
+necesitaría cientos de objetos ``Text``, y cada uno vuelve a rasterizar sus
+letras con FreeType en cada dibujo (es lo más caro). Aquí el panel se dibuja
+como **una sola imagen**:
+
+1. Cada carácter se rasteriza una sola vez con FreeType (la misma biblioteca y
+   los mismos ajustes que usa matplotlib) y se guarda en un *atlas*.
+2. Cada renglón se arma pegando esos mapas de bits en una cuadrícula
+   monoespaciada y pintando cada columna del color de su token. El renglón
+   armado también se guarda en caché: al revelar un paso o desplazar el
+   registro solo se arman los renglones nuevos.
+3. El panel completo se envía al renderizador con ``draw_image``.
 """
 
 from __future__ import annotations
 
+import math
 import re
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Optional
 
+import numpy as np
+from matplotlib.artist import Artist
+from matplotlib.colors import to_rgb
+from matplotlib.font_manager import FontProperties, findfont, get_font
 from matplotlib.patches import Rectangle
 
 from .tema import CONSOLA, FUENTE_MONO, GRAFICA, UI
 
+try:   # mismo modo de "hinting" que el texto normal de matplotlib
+    from matplotlib.backends.backend_agg import get_hinting_flag
+except ImportError:  # pragma: no cover
+    def get_hinting_flag():
+        return 0
+
 ANCHO_CARACTER = 0.6021   # avance de DejaVu Sans Mono, en ems
+BASE_RENGLON = 0.78       # línea base dentro de la franja de cada renglón (fracción desde arriba)
+_ESTILOS_SIN_NEGRITA = ("gutter", "gutter_activo")
 
 
 @dataclass
 class Linea:
     tokens: list[tuple[str, str]] = field(default_factory=list)
     paso: Optional[int] = None     # paso del método al que pertenece el renglón
-    enfasis: bool = False          # renglón con brillo (encabezados de paso)
+    enfasis: bool = False          # renglón destacado (encabezados de paso): en negritas
 
     @property
     def texto(self) -> str:
@@ -74,6 +98,123 @@ def colorear(texto: str) -> list[tuple[str, str]]:
     return tokens
 
 
+# ----------------------------------------------------------------------------------- rasterizado
+class _Atlas:
+    """Mapa de bits de cada carácter, rasterizado una vez con FreeType."""
+
+    def __init__(self):
+        self._glifos: dict = {}
+
+    def glifo(self, ch: str, negrita: bool, tam: float, dpi: float):
+        clave = (ch, negrita, tam, round(dpi, 3))
+        g = self._glifos.get(clave)
+        if g is None:
+            fp = FontProperties(family=FUENTE_MONO, size=tam, weight="bold" if negrita else "normal")
+            fuente = get_font(findfont(fp))
+            fuente.clear()
+            fuente.set_size(tam, dpi)
+            fuente.set_text(ch, 0, flags=get_hinting_flag())
+            fuente.draw_glyphs_to_bitmap(antialiased=True)
+            imagen = np.array(fuente.get_image(), dtype=np.uint8, copy=True)
+            g = (imagen, fuente.get_descent() / 64.0, fuente.get_bitmap_offset()[0] / 64.0)
+            self._glifos[clave] = g
+        return g
+
+
+_ATLAS = _Atlas()
+_RGB: dict = {}
+
+
+def _rgb(estilo: str) -> np.ndarray:
+    if estilo not in _RGB:
+        _RGB[estilo] = (np.array(to_rgb(CONSOLA.get(estilo, CONSOLA["texto"]))) * 255).round().astype(np.uint8)
+    return _RGB[estilo]
+
+
+class _TextoConsola(Artist):
+    """Dibuja los renglones visibles de la consola como una sola imagen."""
+
+    MAX_CACHE = 4000
+
+    def __init__(self, consola: "Consola"):
+        super().__init__()
+        self.consola = consola
+        self._renglones: OrderedDict = OrderedDict()
+        self.set_zorder(2)
+
+    def _renglon(self, tokens, enfasis, tam, dpi, alto, avance):
+        """(alfa, colores) de un renglón: alfa de alto×ancho y un color por columna de píxeles."""
+        clave = (tokens, enfasis, tam, round(dpi, 3), alto, round(avance, 5))
+        hecho = self._renglones.get(clave)
+        if hecho is not None:
+            self._renglones.move_to_end(clave)
+            return hecho
+        n = sum(len(t) for t, _ in tokens)
+        ancho = int(math.ceil(n * avance)) + 6
+        alfa = np.zeros((alto, ancho), np.uint8)
+        colores = np.zeros((ancho, 3), np.uint8)
+        base = BASE_RENGLON * alto
+        col = 0
+        ultimo = 0
+        for texto, estilo in tokens:
+            rgb = _rgb(estilo)
+            negrita = enfasis and estilo not in _ESTILOS_SIN_NEGRITA
+            x_ini, x_fin = int(round(col * avance)), int(round((col + len(texto)) * avance))
+            colores[x_ini:x_fin] = rgb
+            ultimo = x_fin
+            for ch in texto:
+                if ch != " ":
+                    img, d, xo = _ATLAS.glifo(ch, negrita, tam, dpi)
+                    h, w = img.shape
+                    if h and w:
+                        izq = int(round(col * avance + xo))
+                        arriba = int(round(base + d)) + 1 - h       # igual que el texto de Agg
+                        f0, f1 = max(arriba, 0), min(arriba + h, alto)
+                        c0, c1 = max(izq, 0), min(izq + w, ancho)
+                        if f1 > f0 and c1 > c0:
+                            zona = alfa[f0:f1, c0:c1]
+                            np.maximum(zona, img[f0 - arriba:f1 - arriba, c0 - izq:c1 - izq], out=zona)
+                col += 1
+        if ultimo < ancho and tokens:
+            colores[ultimo:] = _rgb(tokens[-1][1])     # tinta que sobresale del último carácter
+        hecho = (alfa, colores)
+        self._renglones[clave] = hecho
+        if len(self._renglones) > self.MAX_CACHE:
+            self._renglones.popitem(last=False)
+        return hecho
+
+    def draw(self, renderer):
+        c = self.consola
+        if not self.get_visible() or not c._visibles:
+            return
+        caja = c.ax.bbox
+        x0, y0 = int(round(caja.x0)), int(round(caja.y0))
+        W, H = int(round(caja.x1)) - x0, int(round(caja.y1)) - y0
+        if W <= 0 or H <= 0:
+            return
+        dpi = self.figure.dpi
+        alto = max(1, int(round(c.fila * H)))
+        avance = c.tam * ANCHO_CARACTER * dpi / 72
+        imagen = np.zeros((H, W, 4), np.uint8)
+        x_texto = int(round(c.x_texto * W))
+        for r, tokens, enfasis in c._visibles:
+            alfa, colores = self._renglon(tokens, enfasis, c.tam, dpi, alto, avance)
+            arriba = int(round((c.margen_sup + r * c.fila) * H))
+            h = min(alfa.shape[0], H - arriba)
+            w = min(alfa.shape[1], W - x_texto)
+            if h <= 0 or w <= 0 or arriba < 0:
+                continue
+            zona = imagen[arriba:arriba + h, x_texto:x_texto + w]
+            zona[..., :3] = colores[None, :w]
+            zona[..., 3] = np.maximum(zona[..., 3], alfa[:h, :w])
+        gc = renderer.new_gc()
+        gc.set_clip_rectangle(caja)
+        renderer.draw_image(gc, x0, y0, np.ascontiguousarray(imagen[::-1]))   # draw_image: fila 0 abajo
+        gc.restore()
+        self.stale = False
+
+
+# ----------------------------------------------------------------------------------- consola
 class Consola:
     """Registro desplazable con números de renglón, selección y barra de scroll."""
 
@@ -95,8 +236,7 @@ class Consola:
         self.inicio = 0
         self.seleccion: Optional[int] = None
         self.pegado_al_final = True
-        self._pool: dict[tuple[int, str], object] = {}
-        self._usados: set[tuple[int, str]] = set()
+        self._visibles: list = []
 
         t = self.ax.transAxes
         self.resaltado = Rectangle((0, 0), 1, 0, transform=t, color=UI["seleccion"], zorder=0.5, visible=False)
@@ -110,6 +250,8 @@ class Consola:
                                 visible=False, linewidth=0)
         for p in (self.resaltado, self.acento_halo, self.acento, self.pista, self.pulgar):
             self.ax.add_patch(p)
+        self.texto = _TextoConsola(self)
+        self.ax.add_artist(self.texto)
         self.medir()
 
     # ------------------------------------------------------------------ geometría
@@ -124,26 +266,14 @@ class Consola:
         self.x_texto = 8 * self.fig.dpi / 72 / ancho
         self.filas = max(1, int((alto - 2 * pad) // fila_px))
         self.columnas = max(10, int((ancho - 20 * self.fig.dpi / 72) // (self.tam * ANCHO_CARACTER * self.fig.dpi / 72)))
-        for (r, _), txt in self._pool.items():
-            txt.set_y(self._y_base(r))
         self.limitar()
 
     def _y_base(self, fila: int) -> float:
-        return 1 - self.margen_sup - (fila + 0.78) * self.fila
-
-    def _texto(self, fila: int, estilo: str):
-        clave = (fila, estilo)
-        txt = self._pool.get(clave)
-        if txt is None:
-            txt = self.ax.text(self.x_texto, self._y_base(fila), "", transform=self.ax.transAxes,
-                               family=FUENTE_MONO, fontsize=self.tam, color=CONSOLA.get(estilo, CONSOLA["texto"]),
-                               ha="left", va="baseline", clip_on=True, parse_math=False, zorder=2)
-            self._pool[clave] = txt
-        return txt
+        return 1 - self.margen_sup - (fila + BASE_RENGLON) * self.fila
 
     # ------------------------------------------------------------------ contenido
     def establecer(self, lineas: list[Linea]) -> None:
-        self.lineas = list(lineas)
+        self.lineas = lineas if isinstance(lineas, list) else list(lineas)
         self.limitar()
 
     def limitar(self) -> None:
@@ -191,8 +321,9 @@ class Consola:
 
     # ------------------------------------------------------------------ dibujo
     def renderizar(self) -> None:
-        usados: set[tuple[int, str]] = set()
-        visibles_sel = []
+        """Prepara los renglones visibles, la selección y la barra de desplazamiento."""
+        visibles = []
+        filas_sel = []
         for r in range(self.filas):
             i = self.inicio + r
             if i >= len(self.lineas):
@@ -200,30 +331,21 @@ class Consola:
             linea = self.lineas[i]
             activa = self.seleccion is not None and linea.paso == self.seleccion
             if activa:
-                visibles_sel.append(r)
+                filas_sel.append(r)
             tokens = [(f"{i + 1:>4}  ", "gutter_activo" if activa else "gutter")] + linea.tokens
-            # Recorta a lo que cabe en el panel.
             total, recortados = 0, []
-            for texto, estilo in tokens:
+            for texto, estilo in tokens:      # recorta a lo que cabe en el panel
                 if total >= self.columnas:
                     break
                 texto = texto[: self.columnas - total]
                 recortados.append((texto, estilo))
                 total += len(texto)
-            estilos = {e for t, e in recortados if t.strip()}
-            for estilo in estilos:
-                cadena = "".join(t if e == estilo else " " * len(t) for t, e in recortados).rstrip()
-                txt = self._texto(r, estilo)
-                txt.set_text(cadena)
-                txt.set_fontweight("bold" if linea.enfasis and estilo not in ("gutter", "gutter_activo") else "normal")
-                usados.add((r, estilo))
-        for clave in self._usados - usados:
-            self._pool[clave].set_text("")
-        self._usados = usados
+            visibles.append((r, tuple(recortados), linea.enfasis))
+        self._visibles = visibles
+        self.texto.stale = True
 
-        # Bloque seleccionado.
-        if visibles_sel:
-            r0, r1 = min(visibles_sel), max(visibles_sel)
+        if filas_sel:
+            r0, r1 = min(filas_sel), max(filas_sel)
             y_top = 1 - self.margen_sup - r0 * self.fila + self.fila * 0.12
             alto = (r1 - r0 + 1) * self.fila
             for p in (self.resaltado, self.acento, self.acento_halo):
@@ -234,11 +356,10 @@ class Consola:
             for p in (self.resaltado, self.acento, self.acento_halo):
                 p.set_visible(False)
 
-        # Barra de desplazamiento.
         n = len(self.lineas)
         if n > self.filas:
             alto = max(self.filas / n, 0.04)
-            y_top = 1 - (self.inicio / n) * 1
+            y_top = 1 - self.inicio / n
             self.pulgar.set_height(alto)
             self.pulgar.set_y(max(0.0, y_top - alto))
             self.pista.set_visible(True)

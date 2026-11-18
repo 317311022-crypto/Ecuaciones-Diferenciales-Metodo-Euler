@@ -1,33 +1,44 @@
 """Panel derecho: la gráfica del paso a paso.
 
-Capas, de atrás hacia adelante:
+Está dividida en dos ejes superpuestos que comparten límites, para que en cada
+cuadro de la animación se redibuje lo mínimo:
 
-1. Fondo con parallax (``efectos.FondoParallax``, en otros ejes).
-2. Campo de pendientes de ``y' = f(x, y)``: un segmentito con la pendiente de
+**Base** (``ax`` y la franja ``ax_err``), cambia solo al mover la vista o al
+cambiar de paso:
+
+1. Campo de pendientes de ``y' = f(x, y)``: un segmentito con la pendiente de
    cada punto. Se recalcula al mover la vista, así siempre cubre lo visible.
-3. Solución de referencia (exacta o RK4 fino), en cian.
-4. Poligonal del método con su halo, el degradado inferior y los nodos.
+2. Solución de referencia (exacta o RK4 fino), en cian.
+3. Ejes, rejilla y la franja con el error global ``|y(xₙ) − yₙ|`` de cada nodo.
+
+**Capa** (``capa``, transparente, encima), cambia en cada cuadro:
+
+4. Poligonal del método con su halo, el resplandor inferior y los nodos.
 5. Geometría del paso seleccionado: recta tangente, triángulo ``h`` / ``h·m``,
    las etapas ``k₁, k₂...`` (puntos donde el método evaluó ``f``), el punto que
    avanza y el error contra la referencia.
-6. Abajo, una franja con el error global ``|y(xₙ) − yₙ|`` de cada nodo.
+
+Todo lo de la capa se recorta al rectángulo de los ejes, así la ventana puede
+copiar a la pantalla solo esa zona.
 """
 
 from __future__ import annotations
 
 import numpy as np
 from matplotlib import patheffects
-from matplotlib.collections import LineCollection
+from matplotlib.collections import LineCollection, PolyCollection
 from matplotlib.colors import LinearSegmentedColormap, to_rgba
 from matplotlib.patches import Polygon
 from matplotlib.ticker import MaxNLocator
 
 from ..formato import etiqueta as etiqueta_sub
 from ..formato import num, sub
+from .calidad import CALIDADES, Calidad
 from .efectos import DegradadoBajoCurva, PuntosLuminosos, TrazoLuminoso, mezclar
 from .tema import FUENTE_MONO, GRAFICA, UI, color_etapa
 
 MAX_ETAPAS = 6
+MAX_NODOS_CON_MARCA = 150      # con más nodos visibles, las marcas solo estorban (y cuestan)
 
 _CAMPO = LinearSegmentedColormap.from_list(
     "campo", [GRAFICA["campo_bajo"], GRAFICA["campo_medio"], GRAFICA["campo_alto"]])
@@ -59,12 +70,19 @@ def _estilizar_ejes(ax, abajo=True):
 
 
 class PanelGrafica:
-    def __init__(self, fig, rect_principal, rect_error):
+    def __init__(self, fig, rect_principal, rect_error, calidad: Calidad = CALIDADES["media"]):
         self.fig = fig
+        self.q = calidad
         self.sim = None
+        self.version = 0                 # cambia con cada simulación cargada
+        self.firma_base: tuple = ()      # estado de la franja de error (para saber si hay que redibujarla)
+
+        # ---------------------------------------------------------------- base
         self.ax = fig.add_axes(rect_principal, zorder=2)
-        self.ax_err = fig.add_axes(rect_error, zorder=2, sharex=self.ax)
-        _estilizar_ejes(self.ax, abajo=False)
+        # La franja de error es una vista general de TODO el intervalo: no sigue el zoom
+        # de la gráfica (así la cámara "seguir" no obliga a redibujarla en cada cuadro).
+        self.ax_err = fig.add_axes(rect_error, zorder=2)
+        _estilizar_ejes(self.ax)
         _estilizar_ejes(self.ax_err)
         self.ax.yaxis.set_major_locator(MaxNLocator(7))
         self.ax_err.yaxis.set_major_locator(MaxNLocator(3))
@@ -72,103 +90,146 @@ class PanelGrafica:
         self.ax_err.yaxis.get_offset_text().set_color(GRAFICA["ticks"])
         self.ax_err.yaxis.get_offset_text().set_fontsize(7)
         ax = self.ax
+        H = self.q.halo
 
-        self.ax.text(0.004, 0.985, "y", transform=ax.transAxes, color=UI["texto_medio"], fontsize=9,
-                     family=FUENTE_MONO, va="top")
+        ax.text(0.004, 0.985, "y", transform=ax.transAxes, color=UI["texto_medio"], fontsize=9,
+                family=FUENTE_MONO, va="top")
         self.ax_err.text(0.997, 0.97, "error global  |y(xₙ) − yₙ|", transform=self.ax_err.transAxes,
                          color=UI["texto_tenue"], fontsize=7.5, family=FUENTE_MONO, va="top", ha="right")
         self.ax_err.text(0.997, 0.04, "x", transform=self.ax_err.transAxes, color=UI["texto_medio"],
                          fontsize=9, family=FUENTE_MONO, ha="right")
 
-        # --- Campo de pendientes
         self.campo = LineCollection([], linewidths=1.15, capstyle="round", zorder=1)
         ax.add_collection(self.campo)
-
-        # --- Referencia
-        self.ref = TrazoLuminoso(ax, GRAFICA["referencia"], lw=1.5, capas=6, alcance=9, intensidad=0.028,
+        n, a = H(6, 0.028)
+        self.ref = TrazoLuminoso(ax, GRAFICA["referencia"], lw=1.5, capas=n, alcance=9, intensidad=a,
                                  nucleo=0.35, zorder=4)
         self.ref_txt = ax.annotate("", (0, 0), xytext=(-6, 8), textcoords="offset points", color=GRAFICA["referencia"],
                                    fontsize=7.5, family=FUENTE_MONO, ha="right", va="bottom", zorder=8,
-                                   annotation_clip=True, bbox=_caja(GRAFICA["referencia"], 0.35))
+                                   annotation_clip=True, clip_on=True, bbox=_caja(GRAFICA["referencia"], 0.35))
+        self.mensaje = ax.text(0.5, 0.5, "", transform=ax.transAxes, ha="center", va="center", fontsize=11,
+                               color=UI["error"], family=FUENTE_MONO, zorder=20, wrap=True,
+                               path_effects=_brillo_texto(UI["error"], 5, 0.2))
 
-        # --- Método
-        self.degradado = DegradadoBajoCurva(ax, GRAFICA["metodo"], alpha=0.045, zorder=2.5)
-        self.poligonal = TrazoLuminoso(ax, GRAFICA["metodo"], lw=2.1, capas=9, alcance=15, intensidad=0.045,
+        # Franja de error: las barras van en una capa propia encima de sus ejes (``capa_err``),
+        # así revelar o seleccionar un paso no obliga a redibujar ejes y marcas.
+        self.capa_err = fig.add_axes(rect_error, zorder=2.5, sharex=self.ax_err, sharey=self.ax_err)
+        self.capa_err.set_axis_off()
+        self.capa_err.set_autoscale_on(False)
+        self.capa_err.set_navigate(False)
+        self.barras = PolyCollection([], facecolors=to_rgba(GRAFICA["error"], 0.28),
+                                     edgecolors=to_rgba(GRAFICA["error"], 0.7), linewidths=0.6, zorder=3)
+        self.capa_err.add_collection(self.barras)
+        self._verts_barras = np.empty((0, 4, 2))
+        n, al = self.q.halo_puntos(4, 2.6)
+        self.err_punto = PuntosLuminosos(self.capa_err, GRAFICA["error"], tam=22, capas=n, alcance=al,
+                                         intensidad=0.12, zorder=6)
+        self.err_avisos = self.capa_err.scatter([], [], marker="^", s=26, color=UI["aviso"], zorder=7,
+                                                linewidths=0)
+
+        # ---------------------------------------------------------------- capa (se anima)
+        self.capa = fig.add_axes(rect_principal, zorder=2.5, sharex=self.ax, sharey=self.ax)
+        self.capa.set_axis_off()
+        self.capa.set_autoscale_on(False)
+        self.capa.set_navigate(False)
+        c = self.capa
+
+        self.degradado = None
+        if self.q.resplandor:
+            franjas = (0.025, 0.06, 0.11, 0.19) if self.q.brillo >= 1 else (0.04, 0.12)
+            self.degradado = DegradadoBajoCurva(c, GRAFICA["metodo"], alpha=0.045 * 4 / len(franjas) * 0.8,
+                                                franjas=franjas, zorder=2.5)
+        n, a = H(9, 0.045)
+        self.poligonal = TrazoLuminoso(c, GRAFICA["metodo"], lw=2.1, capas=n, alcance=15, intensidad=a,
                                        nucleo=0.6, zorder=6)
-        self.nodos = PuntosLuminosos(ax, GRAFICA["metodo"], tam=30, capas=3, alcance=2.4, intensidad=0.09, zorder=7)
+        n, al = self.q.halo_puntos(3, 2.4)
+        self.nodos = PuntosLuminosos(c, GRAFICA["metodo"], tam=30, capas=n, alcance=al, intensidad=0.09, zorder=7)
 
-        # --- Geometría del paso
         amarillo = GRAFICA["tangente"]
-        (self.tangente,) = ax.plot([], [], color=amarillo, lw=1.0, ls=(0, (5, 5)), alpha=0.6, zorder=5)
+        (self.tangente,) = c.plot([], [], color=amarillo, lw=1.0, ls=(0, (5, 5)), alpha=0.6, zorder=5)
         self.triangulo = Polygon([[0, 0]], closed=True, facecolor=to_rgba(amarillo, 0.08),
                                  edgecolor="none", zorder=3, visible=False)
-        ax.add_patch(self.triangulo)
-        (self.cateto_h,) = ax.plot([], [], color=amarillo, lw=1.0, ls=(0, (2, 3)), alpha=0.8, zorder=5)
-        (self.cateto_v,) = ax.plot([], [], color=amarillo, lw=1.0, ls=(0, (2, 3)), alpha=0.8, zorder=5)
-        estilo_txt = dict(fontsize=7.5, family=FUENTE_MONO, zorder=9, annotation_clip=True)
-        self.txt_h = ax.annotate("", (0, 0), xytext=(0, -12), textcoords="offset points", ha="center",
-                                 va="top", color=amarillo, bbox=_caja(amarillo), **estilo_txt)
-        self.txt_v = ax.annotate("", (0, 0), xytext=(9, -4), textcoords="offset points", ha="left",
-                                 va="top", color=amarillo, bbox=_caja(amarillo), **estilo_txt)
+        c.add_patch(self.triangulo)
+        (self.cateto_h,) = c.plot([], [], color=amarillo, lw=1.0, ls=(0, (2, 3)), alpha=0.8, zorder=5)
+        (self.cateto_v,) = c.plot([], [], color=amarillo, lw=1.0, ls=(0, (2, 3)), alpha=0.8, zorder=5)
+        # clip_on: nada de la capa sale del rectángulo de los ejes (la ventana solo copia esa zona).
+        estilo_txt = dict(fontsize=7.5, family=FUENTE_MONO, zorder=9, annotation_clip=True, clip_on=True)
+        self.txt_h = c.annotate("", (0, 0), xytext=(0, -12), textcoords="offset points", ha="center",
+                                va="top", color=amarillo, bbox=_caja(amarillo), **estilo_txt)
+        self.txt_v = c.annotate("", (0, 0), xytext=(9, -4), textcoords="offset points", ha="left",
+                                va="top", color=amarillo, bbox=_caja(amarillo), **estilo_txt)
 
         self.sondas = []     # línea del nodo a cada etapa
         self.etapas = []     # segmento con la pendiente k_i
         self.puntos_etapa = []
         self.txt_etapa = []
+        n_et, a_et = H(5, 0.07)
+        n_pe, al_pe = self.q.halo_puntos(3, 2.2)
         for i in range(MAX_ETAPAS):
-            c = color_etapa(i)
-            (sonda,) = ax.plot([], [], color=c, lw=0.9, ls=(0, (1, 2.5)), alpha=0.75, zorder=5)
+            col = color_etapa(i)
+            (sonda,) = c.plot([], [], color=col, lw=0.9, ls=(0, (1, 2.5)), alpha=0.75, zorder=5)
             self.sondas.append(sonda)
-            self.etapas.append(TrazoLuminoso(ax, c, lw=1.8, capas=5, alcance=8, intensidad=0.07, nucleo=0.4,
+            self.etapas.append(TrazoLuminoso(c, col, lw=1.8, capas=n_et, alcance=8, intensidad=a_et, nucleo=0.4,
                                              zorder=8))
-            self.puntos_etapa.append(PuntosLuminosos(ax, c, tam=16, capas=3, alcance=2.2, intensidad=0.12,
-                                                     nucleo=mezclar(c, "#ffffff", 0.6), zorder=8.5))
-            self.txt_etapa.append(ax.annotate("", (0, 0), xytext=(-9, 0), textcoords="offset points",
-                                              ha="right", va="center", color=c, fontweight="bold",
-                                              path_effects=_brillo_texto(c, 3, 0.25), **estilo_txt))
+            self.puntos_etapa.append(PuntosLuminosos(c, col, tam=16, capas=n_pe, alcance=al_pe, intensidad=0.12,
+                                                     nucleo=mezclar(col, "#ffffff", 0.6), zorder=8.5))
+            efecto = {"path_effects": _brillo_texto(col, 3, 0.25)} if self.q.brillo >= 1 else {}
+            self.txt_etapa.append(c.annotate("", (0, 0), xytext=(-9, 0), textcoords="offset points",
+                                             ha="right", va="center", color=col, fontweight="bold",
+                                             **efecto, **estilo_txt))
 
-        self.avance = TrazoLuminoso(ax, amarillo, lw=2.4, capas=8, alcance=14, intensidad=0.06, nucleo=0.7,
+        n, a = H(8, 0.06)
+        self.avance = TrazoLuminoso(c, amarillo, lw=2.4, capas=n, alcance=14, intensidad=a, nucleo=0.7,
                                     zorder=7.5)
-        self.punto = PuntosLuminosos(ax, GRAFICA["metodo"], tam=62, capas=5, alcance=3.6, intensidad=0.1,
+        n, al = self.q.halo_puntos(5, 3.6)
+        self.punto = PuntosLuminosos(c, GRAFICA["metodo"], tam=62, capas=n, alcance=al, intensidad=0.11,
                                      zorder=10)
-        self.destino = ax.scatter([], [], s=90, facecolors="none", edgecolors=amarillo, linewidths=1.2,
-                                  alpha=0.8, zorder=9)
-        self.error = TrazoLuminoso(ax, GRAFICA["error"], lw=1.8, capas=5, alcance=8, intensidad=0.08, nucleo=0.5,
+        self.destino = c.scatter([], [], s=90, facecolors="none", edgecolors=amarillo, linewidths=1.2,
+                                 alpha=0.8, zorder=9)
+        n, a = H(5, 0.08)
+        self.error = TrazoLuminoso(c, GRAFICA["error"], lw=1.8, capas=n, alcance=8, intensidad=a, nucleo=0.5,
                                    zorder=8)
-        self.txt_error = ax.annotate("", (0, 0), xytext=(9, 4), textcoords="offset points", ha="left",
-                                     va="bottom", color=GRAFICA["error"], bbox=_caja(GRAFICA["error"]), **estilo_txt)
-        self.txt_punto = ax.annotate("", (0, 0), xytext=(-10, 12), textcoords="offset points", ha="right",
-                                     va="bottom", color="#ffffff", fontsize=8, family=FUENTE_MONO, zorder=11,
-                                     annotation_clip=True, bbox=_caja(GRAFICA["metodo"], 0.8))
+        self.txt_error = c.annotate("", (0, 0), xytext=(9, 4), textcoords="offset points", ha="left",
+                                    va="bottom", color=GRAFICA["error"], bbox=_caja(GRAFICA["error"]), **estilo_txt)
+        self.txt_punto = c.annotate("", (0, 0), xytext=(-10, 12), textcoords="offset points", ha="right",
+                                    va="bottom", color="#ffffff", fontsize=8, family=FUENTE_MONO, zorder=11,
+                                    annotation_clip=True, clip_on=True, bbox=_caja(GRAFICA["metodo"], 0.8))
 
-        # --- Franja de error
-        self.barras = None
-        self.err_punto = PuntosLuminosos(self.ax_err, GRAFICA["error"], tam=22, capas=4, alcance=2.6,
-                                         intensidad=0.12, zorder=6)
-        self.err_avisos = self.ax_err.scatter([], [], marker="^", s=26, color=UI["aviso"], zorder=7, linewidths=0)
-
-        self.mensaje = ax.text(0.5, 0.5, "", transform=ax.transAxes, ha="center", va="center", fontsize=11,
-                               color=UI["error"], family=FUENTE_MONO, zorder=20, wrap=True,
-                               path_effects=_brillo_texto(UI["error"], 5, 0.2))
         self.vista_inicial = ((0.0, 1.0), (0.0, 1.0))
         self._limpiar_paso()
+
+    # ------------------------------------------------------------------ ejes
+    @property
+    def ejes_base(self) -> list:
+        return [self.ax, self.ax_err]
+
+    def contiene(self, ax) -> bool:
+        """¿Es ``ax`` (p. ej. ``evento.inaxes``) la gráfica principal?"""
+        return ax is self.ax or ax is self.capa
+
+    def en_franja(self, ax) -> bool:
+        """¿Es ``ax`` la franja de error?"""
+        return ax is self.ax_err or ax is self.capa_err
 
     # ------------------------------------------------------------------ carga
     def cargar(self, sim) -> None:
         """Prepara la gráfica para una simulación nueva (o ``None`` si hubo error)."""
         self.sim = sim
+        self.version += 1
         self.mensaje.set_text("")
-        if self.barras is not None:
-            self.barras.remove()
-            self.barras = None
+        self._verts_barras = np.empty((0, 4, 2))
+        self.barras.set_verts([])
+        self.err_punto.set_offsets(np.empty((0, 2)))
         if sim is None:
             for a in (self.ref, self.poligonal, self.nodos):
                 a.set_visible(False)
-            self.degradado.set_visible(False)
+            if self.degradado is not None:
+                self.degradado.set_visible(False)
             self.ref_txt.set_text("")
             self.campo.set_segments([])
             self.err_avisos.set_offsets(np.empty((0, 2)))
             self._limpiar_paso()
+            self.firma_base = (self.version,)
             return
         for a in (self.ref, self.poligonal, self.nodos):
             a.set_visible(True)
@@ -184,21 +245,28 @@ class PanelGrafica:
             self.ref_txt.set_text("")
         self.vista_inicial = self._vista_inicial(sim)
         self.aplicar_vista(*self.vista_inicial)
+        self.ax_err.set_xlim(*self.vista_inicial[0])
 
-        # Franja de error (las barras se revelan conforme se avanza).
+        # Franja de error: rectángulos precalculados; se muestran conforme se avanza.
         e = np.where(np.isfinite(self.errores), self.errores, 0.0)
-        anchos = np.diff(self.xn) * 0.6 if len(self.xn) > 1 else [sim.h * 0.6]
-        self.barras = self.ax_err.bar(self.xn[1:], e[1:], width=anchos, color=to_rgba(GRAFICA["error"], 0.28),
-                                      edgecolor=to_rgba(GRAFICA["error"], 0.7), linewidth=0.6, zorder=3)
+        if len(self.xn) > 1:
+            medio = np.diff(self.xn) * 0.3
+            x0, x1 = self.xn[1:] - medio, self.xn[1:] + medio
+            alto = e[1:]
+            self._verts_barras = np.stack([np.column_stack([x0, np.zeros_like(x0)]), np.column_stack([x0, alto]),
+                                           np.column_stack([x1, alto]), np.column_stack([x1, np.zeros_like(x1)])],
+                                          axis=1)
         tope = float(np.nanmax(e)) if e.size and np.nanmax(e) > 0 else 1.0
         self.ax_err.set_ylim(0, tope * 1.3)
         inestables = [i + 1 for i in sim.pasos_inestables if i + 1 < len(self.xn)]
         self.err_avisos.set_offsets(np.column_stack([self.xn[inestables], np.full(len(inestables), tope * 1.18)])
                                     if inestables else np.empty((0, 2)))
+        self.firma_base = ()
 
     def mostrar_error(self, mensaje: str) -> None:
         self.cargar(None)
         self.mensaje.set_text(mensaje)
+        self.firma_base = (self.version, mensaje)
 
     def _vista_inicial(self, sim):
         x0, x1 = sim.x0, sim.x_final
@@ -267,7 +335,6 @@ class PanelGrafica:
         self.punto.set_offsets(np.empty((0, 2)))
         self.destino.set_offsets(np.empty((0, 2)))
         self.error.set_data([], [])
-        self.err_punto.set_offsets(np.empty((0, 2)))
 
     def _hay_espacio_a_la_derecha(self, x: float) -> bool:
         x0, x1 = self.ax.get_xlim()
@@ -280,6 +347,23 @@ class PanelGrafica:
         paso = self.sim.pasos[seleccion]
         p = progreso if seleccion == revelados - 1 else 1.0
         return paso.t + p * paso.h, float(paso.y) + p * float(paso.y_siguiente - paso.y)
+
+    def _actualizar_franja(self, nodos_vis: int, activa: int | None) -> None:
+        """Barras de error reveladas, la seleccionada encendida (solo si algo cambió)."""
+        firma = (self.version, nodos_vis, activa)
+        if firma == self.firma_base:
+            return
+        self.firma_base = firma
+        n = max(nodos_vis - 1, 0)
+        self.barras.set_verts(self._verts_barras[:n])
+        colores = np.tile(to_rgba(GRAFICA["error"], 0.28), (n, 1))
+        if activa is not None and activa < n:
+            colores[activa] = to_rgba(GRAFICA["error"], 0.85)
+        self.barras.set_facecolors(colores)
+        if activa is not None and activa + 1 < len(self.errores) and np.isfinite(self.errores[activa + 1]):
+            self.err_punto.set_offsets([[self.xn[activa + 1], self.errores[activa + 1]]])
+        else:
+            self.err_punto.set_offsets(np.empty((0, 2)))
 
     def mostrar(self, revelados: int, seleccion: int, progreso: float = 1.0, pulso: float = 1.0) -> None:
         """Dibuja el estado: ``revelados`` pasos visibles, el paso ``seleccion``
@@ -304,19 +388,13 @@ class PanelGrafica:
             ys = np.r_[yn[: j + 1], y_mov]
             nodos_vis = j + 2 if progreso >= 1 else j + 1
         self.poligonal.set_data(xs, ys)
-        self.degradado.set_data(xs, ys, self.ax.get_ylim()[0])
+        if self.degradado is not None:
+            self.degradado.set_data(xs, ys, self.ax.get_ylim()[0])
+        self.nodos.set_visible(nodos_vis <= MAX_NODOS_CON_MARCA)
         self.nodos.set_offsets(np.column_stack([xn[:nodos_vis], yn[:nodos_vis]]))
 
-        # Franja de error: barras reveladas y la seleccionada encendida.
-        if self.barras is not None:
-            for i, barra in enumerate(self.barras):
-                visible = i + 1 < nodos_vis
-                barra.set_visible(visible)
-                activa = visible and i == seleccion and (seleccion < revelados - 1 or progreso >= 1)
-                barra.set_facecolor(to_rgba(GRAFICA["error"], 0.85 if activa else 0.28))
-            if revelados and (seleccion < revelados - 1 or progreso >= 1) and np.isfinite(self.errores[seleccion + 1]):
-                self.err_punto.set_offsets([[xn[seleccion + 1], self.errores[seleccion + 1]]])
-                self.err_punto.set_brillo(pulso)
+        activa = seleccion if revelados and (seleccion < revelados - 1 or progreso >= 1) else None
+        self._actualizar_franja(nodos_vis, activa)
 
         if revelados == 0:
             self.punto.set_offsets([[xn[0], yn[0]]])

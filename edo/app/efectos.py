@@ -23,6 +23,7 @@ Parallax
 from __future__ import annotations
 
 import numpy as np
+from matplotlib.collections import LineCollection
 from matplotlib.colors import to_rgba
 from matplotlib.patches import Polygon
 
@@ -37,35 +38,39 @@ def mezclar(color, otro="#ffffff", t: float = 0.5):
 
 # --------------------------------------------------------------------------- glow
 class TrazoLuminoso:
-    """Una línea con halo luminoso. Se usa como un ``Line2D``: ``set_data``."""
+    """Una línea con halo luminoso. Se usa como un ``Line2D``: ``set_data``.
+
+    Las copias anchas y translúcidas del halo van todas en UNA ``LineCollection``
+    (una sola llamada de dibujo en lugar de una por capa)."""
 
     def __init__(self, ax, color, lw: float = 2.0, capas: int = 8, alcance: float = 12.0,
                  intensidad: float = 0.045, nucleo: float = 0.55, zorder: float = 5,
-                 ls="-", alpha: float = 1.0, **kw):
-        self.color = color
+                 ls="-", alpha: float = 1.0):
         self.intensidad = intensidad
         self.alpha = alpha
-        self.halos = []
-        for i in range(capas):
-            (linea,) = ax.plot([], [], color=color, lw=lw + alcance * (i + 1) / capas,
-                               alpha=intensidad, solid_capstyle="round", solid_joinstyle="round",
-                               zorder=zorder - 0.02, **kw)
-            self.halos.append(linea)
+        self._n = capas
+        anchos = [lw + alcance * (i + 1) / capas for i in range(capas)]
+        self.halo = LineCollection([], linewidths=anchos, colors=[color], alpha=intensidad, capstyle="round",
+                                   joinstyle="round", zorder=zorder - 0.02)
+        ax.add_collection(self.halo, autolim=False)
         (self.linea,) = ax.plot([], [], color=color, lw=lw, ls=ls, alpha=alpha, zorder=zorder,
-                                solid_capstyle="round", solid_joinstyle="round", **kw)
+                                solid_capstyle="round", solid_joinstyle="round")
         self.nucleo = None
         if nucleo:
             (self.nucleo,) = ax.plot([], [], color=mezclar(color, "#ffffff", nucleo), lw=max(lw * 0.38, 0.6),
                                      ls=ls, alpha=alpha, zorder=zorder + 0.01,
-                                     solid_capstyle="round", solid_joinstyle="round", **kw)
+                                     solid_capstyle="round", solid_joinstyle="round")
 
     @property
     def artistas(self):
-        return [*self.halos, self.linea] + ([self.nucleo] if self.nucleo is not None else [])
+        return [self.halo, self.linea] + ([self.nucleo] if self.nucleo is not None else [])
 
     def set_data(self, x, y) -> None:
-        for a in self.artistas:
-            a.set_data(x, y)
+        x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
+        self.halo.set_segments([np.column_stack([x, y])] * self._n if len(x) else [])
+        self.linea.set_data(x, y)
+        if self.nucleo is not None:
+            self.nucleo.set_data(x, y)
 
     def set_visible(self, visible: bool) -> None:
         for a in self.artistas:
@@ -73,48 +78,57 @@ class TrazoLuminoso:
 
     def set_brillo(self, factor: float) -> None:
         """Escala la intensidad del halo (para pulsar)."""
-        for h in self.halos:
-            h.set_alpha(min(1.0, self.intensidad * factor))
+        self.halo.set_alpha(min(1.0, self.intensidad * factor))
 
     def set_alpha(self, alpha: float) -> None:
         self.alpha = alpha
         self.linea.set_alpha(alpha)
         if self.nucleo is not None:
             self.nucleo.set_alpha(alpha)
-        for h in self.halos:
-            h.set_alpha(self.intensidad * alpha)
+        self.halo.set_alpha(self.intensidad * alpha)
 
 
 class PuntosLuminosos:
-    """Marcadores con halo: un núcleo claro sobre un disco de color y aros difusos."""
+    """Marcadores con halo: un núcleo claro sobre un disco de color y aros difusos.
+
+    Todo (aros, disco y núcleo de todos los puntos) va en UNA colección: primero
+    los aros, luego los discos y al final los núcleos, igual que si fueran
+    colecciones separadas pero con una sola llamada de dibujo."""
 
     def __init__(self, ax, color, tam: float = 40, capas: int = 5, alcance: float = 3.2,
                  intensidad: float = 0.09, nucleo="#ffffff", zorder: float = 7):
         self.intensidad = intensidad
-        self.halos = [
-            ax.scatter([], [], s=tam * (1 + alcance * (i + 1) / capas) ** 2, color=color,
-                       alpha=intensidad, linewidths=0, zorder=zorder - 0.03)
-            for i in range(capas)
-        ]
-        self.disco = ax.scatter([], [], s=tam, color=color, linewidths=0, zorder=zorder)
-        self.centro = ax.scatter([], [], s=tam * 0.32, color=nucleo, linewidths=0, zorder=zorder + 0.01)
+        self._capas = capas
+        self._tams = np.array([tam * (1 + alcance * (i + 1) / capas) ** 2 for i in range(capas)]
+                              + [tam, tam * 0.32])
+        self._colores = np.array([to_rgba(color, intensidad)] * capas + [to_rgba(color, 1.0), to_rgba(nucleo, 1.0)])
+        self._factor = 1.0
+        self._xy = np.empty((0, 2))
+        self.col = ax.scatter([], [], s=[], linewidths=0, zorder=zorder)
 
     @property
     def artistas(self):
-        return [*self.halos, self.disco, self.centro]
+        return [self.col]
+
+    def _actualizar(self) -> None:
+        n, k = len(self._xy), len(self._tams)
+        self.col.set_offsets(np.tile(self._xy, (k, 1)) if n else np.empty((0, 2)))
+        self.col.set_sizes(np.repeat(self._tams, n))
+        colores = self._colores.copy()
+        colores[: self._capas, 3] = min(1.0, self.intensidad * self._factor)
+        self.col.set_facecolors(np.repeat(colores, n, axis=0))
 
     def set_offsets(self, xy) -> None:
-        xy = np.asarray(xy, dtype=float).reshape(-1, 2)
-        for a in self.artistas:
-            a.set_offsets(xy)
+        self._xy = np.asarray(xy, dtype=float).reshape(-1, 2)
+        self._actualizar()
 
     def set_visible(self, visible: bool) -> None:
-        for a in self.artistas:
-            a.set_visible(visible)
+        self.col.set_visible(visible)
 
     def set_brillo(self, factor: float) -> None:
-        for h in self.halos:
-            h.set_alpha(min(1.0, self.intensidad * factor))
+        if factor != self._factor:
+            self._factor = factor
+            self._actualizar()
 
 
 class DegradadoBajoCurva:
@@ -236,15 +250,19 @@ class CapaReticula(_Capa):
 class FondoParallax:
     """Fondo de la gráfica.
 
-    ``ax_fijo`` guarda una sola imagen (degradado, nebulosa y viñeta) que no se
-    mueve; ``ax`` contiene las capas que sí se desplazan. Separarlas importa por
-    rendimiento: la imagen solo se redibuja cuando cambia toda la ventana,
-    mientras que las capas se redibujan en cada cuadro de la animación.
+    ``ax_fijo`` guarda una sola imagen (degradado, nebulosa y viñeta) y ``ax``
+    las capas decorativas (estrellas, orbes, retícula). Con ``parallax=True``
+    las capas se desplazan con la cámara y el ratón, lo que obliga a
+    redibujarlas en cada movimiento; con ``parallax=False`` quedan fijas y se
+    dibujan una sola vez junto con el resto de la parte estática de la ventana.
     """
 
     SENSIBILIDAD_RATON = 0.07
 
-    def __init__(self, fig, rect, semilla: int = 7, zorder: float = -5):
+    def __init__(self, fig, rect, parallax: bool = True, decoracion: bool = True, centelleo: bool = True,
+                 semilla: int = 7, zorder: float = -5):
+        self.parallax = parallax and decoracion
+        self.centelleo = centelleo and self.parallax
         self.ax_fijo = fig.add_axes(rect, zorder=zorder - 0.5)
         self.ax = fig.add_axes(rect, zorder=zorder)
         for ax in (self.ax_fijo, self.ax):
@@ -260,13 +278,17 @@ class FondoParallax:
                             aspect="auto", interpolation="bilinear", zorder=0)
 
         estrellas = ["#ffffff", "#9fdcff", "#d9c2ff", "#ffd6f5"]
-        self.capas = [
-            CapaEstrellas(self.ax, rng, 260, 0.10, (0.4, 1.6), (0.15, 0.55), estrellas, zorder=2),
-            CapaOrbes(self.ax, rng, 11, 0.25, ["#ff2bd6", "#00e5ff", "#8a5cff", "#00ffc8", "#3d7bff"], zorder=3),
-            CapaEstrellas(self.ax, rng, 60, 0.42, (1.2, 2.8), (0.35, 0.9), estrellas, zorder=4),
-            CapaReticula(self.ax, 0.7, 0.045, "#1d2a52", zorder=5),
-        ]
-        self.actualizar((0.0, 0.0), (0.0, 0.0))
+        self.capas = []
+        if decoracion:
+            self.capas = [
+                CapaEstrellas(self.ax, rng, 260, 0.10, (0.4, 1.6), (0.15, 0.55), estrellas, zorder=2),
+                CapaOrbes(self.ax, rng, 11, 0.25, ["#ff2bd6", "#00e5ff", "#8a5cff", "#00ffc8", "#3d7bff"], zorder=3),
+                CapaEstrellas(self.ax, rng, 60, 0.42, (1.2, 2.8), (0.35, 0.9), estrellas, zorder=4),
+                CapaReticula(self.ax, 0.7, 0.045, "#1d2a52", zorder=5),
+            ]
+        self.firma: tuple = ()
+        for capa in self.capas:
+            capa.desplazar(0.0, 0.0)
 
     @staticmethod
     def _imagen_fija(n: int = 180) -> np.ndarray:
@@ -286,15 +308,24 @@ class FondoParallax:
         return np.clip(img, 0, 1)
 
     @property
-    def ejes(self):
-        return [self.ax_fijo, self.ax]
+    def ejes_moviles(self) -> list:
+        """Ejes que hay que redibujar cuando la cámara o el ratón se mueven."""
+        return [self.ax] if self.parallax else []
 
     def actualizar(self, camara, raton, t: float | None = None) -> None:
         """``camara``: desplazamiento de la vista de datos (en anchos de la vista
-        inicial). ``raton``: posición del ratón respecto al centro, en [-0.5, 0.5]."""
+        inicial). ``raton``: posición del ratón respecto al centro, en [-0.5, 0.5].
+        Sin parallax no hace nada."""
+        if not self.parallax:
+            return
         cx, cy = camara
         rx, ry = raton
+        if not self.centelleo:
+            t = None
         k = self.SENSIBILIDAD_RATON
         for capa in self.capas:
             p = capa.profundidad
             capa.desplazar(-p * cx + (1 - p) * k * rx, -p * cy + (1 - p) * k * ry, t)
+        # Lo que hay que comparar para saber si el fondo cambió desde el último dibujo.
+        self.firma = (round(float(cx), 5), round(float(cy), 5), round(float(rx), 4), round(float(ry), 4),
+                      None if t is None else round(t, 2))

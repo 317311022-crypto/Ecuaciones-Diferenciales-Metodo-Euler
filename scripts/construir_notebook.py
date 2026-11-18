@@ -612,9 +612,11 @@ md(r"""
 ## 5. La app Euler·Lab
 
 ```bash
-python euler_app.py          # la ecuación y los parámetros se escriben al inicio de ese archivo
-python -m edo.app "y(1 - y/10)" --y0 1 --h 0.5 --hasta 10 --metodo rk4
+python euler_app.py          # la ecuación, los parámetros y la CALIDAD se escriben al inicio de ese archivo
+python -m edo.app "y(1 - y/10)" --y0 1 --h 0.5 --hasta 10 --metodo rk4 --calidad alta
 ```
+
+**Calidad visual** (`CALIDAD` en `euler_app.py`): `"media"` (predeterminada, pensada para laptops: fondo fijo sin parallax, mitad de capas de brillo, 25 cuadros por segundo), `"alta"` (todos los efectos, con parallax; para computadoras de escritorio) y `"baja"` (equipos lentos). La ventana además se ajusta sola al tamaño de la pantalla, incluida la escala de Windows (125 %, 150 %...).
 
 - **Arriba**: la ecuación $y' = f(x, y)$, la condición inicial, $h$, el intervalo, la solución exacta (opcional) y el método. `Enter` o **▶ Resolver** recalculan.
 - **Izquierda, registro**: cada paso con sus evaluaciones de $f$ ($k_1, k_2, \dots$ en el mismo color que en la gráfica), la fórmula con los números sustituidos y el error contra la referencia. Avisos (⚠) y errores (✖) aparecen en el mismo registro.
@@ -631,8 +633,8 @@ from edo.app import EulerLab
 
 os.makedirs("img", exist_ok=True)
 
-def captura(config, nombre, revelados, seleccion=None, progreso=1.0, seguir=False):
-    app = EulerLab(config, animar=False)
+def captura(config, nombre, revelados, seleccion=None, progreso=1.0, seguir=False, calidad="media"):
+    app = EulerLab(config, calidad=calidad, animar=False)
     app.ir_a(revelados, seleccion, progreso)
     if seguir:
         app.alternar_seguir()
@@ -649,11 +651,11 @@ captura(Configuracion("x + y", 0, 1, 0.1, 2, "euler", "2*exp(x) - x - 1"), "app_
 """)
 
 md(r"""
-Con RK4 el registro muestra las cuatro evaluaciones de cada paso y la gráfica marca dónde se hizo cada una (puntos $k_1 \dots k_4$ con su pendiente). Aquí con la cámara en modo **seguir**: el fondo se desplaza con parallax (las capas lejanas se mueven menos que los datos).
+Con RK4 el registro muestra las cuatro evaluaciones de cada paso y la gráfica marca dónde se hizo cada una (puntos $k_1 \dots k_4$ con su pendiente). Esta captura usa la calidad **alta** con la cámara en modo **seguir**: el fondo se desplaza con parallax (las capas lejanas se mueven menos que los datos). La franja de error de abajo no sigue el zoom: siempre muestra el intervalo completo.
 """)
 
 code(r"""
-captura(Configuracion("y(1 - y/10)", 0, 1, 0.5, 10, "rk4", ""), "app_rk4", 6, 5, 1.0, seguir=True)
+captura(Configuracion("y(1 - y/10)", 0, 1, 0.5, 10, "rk4", ""), "app_rk4", 6, 5, 1.0, seguir=True, calidad="alta")
 """)
 
 md(r"""
@@ -679,8 +681,9 @@ edo/
 ├── simulacion.py     Simulacion: corrida completa paso a paso + referencia + avisos
 └── app/              la interfaz (solo dibuja; no sabe nada de Euler)
     ├── tema.py       colores y fuentes
+    ├── calidad.py    perfiles alta / media / baja (cuántos efectos dibujar)
     ├── efectos.py    luminiscencia y fondo con parallax
-    ├── consola.py    registro con resaltado de sintaxis
+    ├── consola.py    registro con resaltado de sintaxis (rasterizado propio)
     ├── grafica.py    campo de pendientes, poligonal, tangente, etapas, error
     └── ventana.py    une todo, eventos y animación
 ```
@@ -689,9 +692,20 @@ La separación importa: **la app no tiene ningún `if metodo == "euler"`**. Toma
 
 **Luminiscencia.** Matplotlib no tiene "brillo": cada trazo importante se dibuja varias veces debajo de sí mismo, cada copia más ancha y más transparente, con un núcleo casi blanco encima (como un tubo de neón).
 
-**Parallax.** El fondo son capas (estrellas, orbes desenfocados, una retícula de puntos) en unos ejes detrás de los ejes de datos. Cada capa tiene una profundidad $p \in (0, 1)$: cuando la vista de datos se desplaza $\Delta$, la capa se desplaza $p\,\Delta$; con el ratón la vista "orbita" alrededor del plano de los datos y lo más lejano se mueve más. Las capas se repiten periódicamente para que nunca se vea un borde.
+**Parallax** (calidad alta). El fondo son capas (estrellas, orbes desenfocados, una retícula de puntos) en unos ejes detrás de los ejes de datos. Cada capa tiene una profundidad $p \in (0, 1)$: cuando la vista de datos se desplaza $\Delta$, la capa se desplaza $p\,\Delta$; con el ratón la vista "orbita" alrededor del plano de los datos y lo más lejano se mueve más. Las capas se repiten periódicamente para que nunca se vea un borde. En calidad media y baja el fondo es fijo: se dibuja una sola vez.
 
-**Rendimiento.** La ventana se redibuja completa solo cuando cambia el registro; en cada cuadro de la animación solo se repintan la gráfica, el fondo móvil y la barra de estado (*blitting*).
+**Rendimiento.** Matplotlib dibuja con el **CPU** (biblioteca Agg), no con la tarjeta de video: lo que decide la fluidez es cuánto se dibuja por cuadro y cuántos píxeles tiene la ventana. Por eso la ventana se compone de capas que se guardan ya dibujadas y solo se repintan cuando cambia lo que muestran:
+
+| Capa | Se repinta cuando... |
+|---|---|
+| fija (barras, paneles, botones, fondo) | cambia el método, la fórmula o el tamaño de la ventana |
+| registro | se revela o selecciona un paso, o se desplaza |
+| base (ejes, campo de pendientes, referencia) | se mueve la vista (zoom, arrastrar, cámara "seguir") |
+| franja de error | se revela o selecciona un paso |
+| dinámica (poligonal, tangente, etapas) | en cada cuadro de la animación |
+| estado y cursor | cambia su texto (p. ej. coordenadas del ratón) |
+
+Cada actualización copia a la pantalla (*blit*) solo la zona que cambió. Además, el registro no usa cientos de objetos `Text`: cada carácter se rasteriza **una vez** con FreeType y los renglones se arman con NumPy y se guardan en caché; los campos de texto repintan solo su rectángulo al escribir (el `TextBox` de matplotlib redibuja toda la ventana en cada tecla). Una prueba automática compara la pantalla así compuesta contra un dibujo completo, píxel por píxel, después de cada tipo de interacción.
 """)
 
 # =============================================================================================== 6
